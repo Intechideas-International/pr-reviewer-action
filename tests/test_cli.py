@@ -116,9 +116,21 @@ def test_fork_pr_is_skipped(env, monkeypatch):
     assert api.created == []
 
 
+def test_fork_pr_without_secrets_is_skipped_not_failed(env, monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY")
+    api = FakeAPI([GOOD])
+    wire(monkeypatch, FakeGitHub(pull=pr(fork=True)), api)
+    assert review(env) == cli.EXIT_OK
+    assert read_outputs(env / "output")["result"] == "skipped-fork"
+    assert api.created == []
+
+
 def test_missing_key_is_a_setup_error(env, monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY")
+    api = FakeAPI([GOOD])
+    wire(monkeypatch, FakeGitHub(), api)
     assert review(env) == cli.EXIT_SETUP
+    assert api.created == []
 
 
 def test_agent_not_deployed_is_a_setup_error(env, monkeypatch):

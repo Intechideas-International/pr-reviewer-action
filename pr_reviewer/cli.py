@@ -114,10 +114,9 @@ def review_summary(repo, pr, sha, rows, result):
 
 
 def cmd_review(a):
-    for var in ("ANTHROPIC_API_KEY", "GITHUB_TOKEN"):
-        if not os.environ.get(var):
-            print(f"::error::{var} is not set")
-            return EXIT_SETUP
+    if not os.environ.get("GITHUB_TOKEN"):
+        print("::error::GITHUB_TOKEN is not set")
+        return EXIT_SETUP
     gh = github.GitHub(os.environ["GITHUB_TOKEN"], a.repo)
     pr = gh.pr(a.pr)
     sha = pr["head"]["sha"]
@@ -131,6 +130,9 @@ def cmd_review(a):
         print(f"::notice::A bot review for {sha[:8]} already exists; nothing to do.")
         output(result="skipped-reviewed")
         return EXIT_OK
+    if not os.environ.get("ANTHROPIC_API_KEY"):  # checked after the skips: fork PRs get no secrets
+        print("::error::ANTHROPIC_API_KEY is not set")
+        return EXIT_SETUP
 
     api = anthropic.Anthropic()
     os.makedirs(a.out, exist_ok=True)
