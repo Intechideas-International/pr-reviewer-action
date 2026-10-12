@@ -22,6 +22,8 @@ import sys
 import time
 import urllib.error
 
+import anthropic
+
 from . import github, session, validate
 
 EXIT_OK, EXIT_FAILED, EXIT_USAGE, EXIT_SETUP, EXIT_POST = 0, 1, 2, 3, 4
@@ -130,7 +132,6 @@ def cmd_review(a):
         output(result="skipped-reviewed")
         return EXIT_OK
 
-    import anthropic
     api = anthropic.Anthropic()
     os.makedirs(a.out, exist_ok=True)
     try:
@@ -183,7 +184,6 @@ def cmd_interrupt(a):
     if not sid:
         print("no session to interrupt")
         return EXIT_OK
-    import anthropic
     session.interrupt(anthropic.Anthropic(), sid)
     print(f"interrupted {sid}")
     return EXIT_OK
