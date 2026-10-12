@@ -1,0 +1,38 @@
+# Copy to .github/workflows/pr-review.yml in the client repo. Needs the repo or org secret
+# ANTHROPIC_API_KEY (the client's Anthropic workspace); SLACK_WEBHOOK_URL is optional.
+name: PR review
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review, synchronize]
+concurrency:  # a newer commit cancels the review of an older one (its session is interrupted)
+  group: pr-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  review:
+    # Filters (edit per client): no drafts, no bot authors, only PRs into main or develop.
+    if: >-
+      !github.event.pull_request.draft &&
+      !endsWith(github.event.pull_request.user.login, '[bot]') &&
+      contains(fromJSON('["main", "develop"]'), github.base_ref)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions: {contents: read, pull-requests: read, checks: read, statuses: read}
+    outputs:
+      result: ${{ steps.review.outputs.result }}
+    steps:
+      - id: review
+        uses: Intechideas-International/pr-reviewer-action@v1
+        with:
+          client: acme
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          shadow: false
+          slack-webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+  post:
+    needs: review
+    if: needs.review.outputs.result == 'reviewed'
+    runs-on: ubuntu-latest
+    permissions: {pull-requests: write}
+    steps:
+      - uses: Intechideas-International/pr-reviewer-action/post@v1
+        with:
+          slack-webhook: ${{ secrets.SLACK_WEBHOOK_URL }}

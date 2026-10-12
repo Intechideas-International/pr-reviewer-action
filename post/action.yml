@@ -1,0 +1,43 @@
+name: InTech PR Reviewer - post
+description: >-
+  Post the review left by the InTech PR Reviewer action as a COMMENT review, after validating it again.
+  Run it in a separate job with pull-requests write, so the review session never sees a write token.
+  Posts nothing when a bot review for the same head commit already exists.
+inputs:
+  github-token:
+    description: Token allowed to write pull request reviews
+    default: ${{ github.token }}
+  slack-webhook:
+    description: Slack incoming webhook; when set, a failed post sends an alert
+    default: ""
+outputs:
+  result:
+    description: posted | skipped-reviewed
+    value: ${{ steps.post.outputs.result }}
+runs:
+  using: composite
+  steps:
+    - uses: actions/download-artifact@v4
+      with:
+        name: pr-review-${{ github.event.pull_request.number }}
+        path: ${{ runner.temp }}/pr-review-out
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+    - shell: bash
+      run: python -m pip install --quiet --disable-pip-version-check "$GITHUB_ACTION_PATH/.."
+    - id: post
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        PR: ${{ github.event.pull_request.number }}
+      run: pr-reviewer post --pr "$PR" --dir "$RUNNER_TEMP/pr-review-out"
+    - name: Alert Slack
+      if: failure() && inputs.slack-webhook != ''
+      shell: bash
+      env:
+        SLACK_WEBHOOK: ${{ inputs.slack-webhook }}
+        MSG: "PR Reviewer could not post on ${{ github.repository }}#${{ github.event.pull_request.number }}: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+      run: |
+        python3 -c 'import json, os; print(json.dumps({"text": os.environ["MSG"]}))' |
+          curl -sS -X POST -H 'Content-type: application/json' --data @- "$SLACK_WEBHOOK"

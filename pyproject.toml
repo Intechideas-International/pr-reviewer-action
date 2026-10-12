@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pr-reviewer"
+version = "1.0.0"
+description = "Runner for InTech's PR Reviewer: one Claude Managed Agents review per pull request head commit"
+requires-python = ">=3.10"
+dependencies = ["anthropic==1.12.1"]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[project.scripts]
+pr-reviewer = "pr_reviewer.cli:main"
+
+[tool.setuptools]
+packages = ["pr_reviewer"]
