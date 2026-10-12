@@ -1,7 +1,9 @@
 """GitHub REST calls the runner needs: read a PR and its context, find earlier bot reviews, post a review.
 
-A bot review is any PR review whose body carries the marker line
-`<!-- agex-review: <full head_sha> ... -->`; matching is on the head SHA only.
+A bot review is a PR review posted by a bot account (user.type "Bot", e.g. github-actions[bot]) whose
+body ends with the marker line `<!-- agex-review: <full head_sha> ... -->`. Only the last non-empty line
+counts, as in validate, so a marker quoted earlier in the body (from the diff, say) is ignored; and a
+person cannot suppress the reviewer by posting a review that carries the marker.
 """
 import json
 import os
@@ -9,7 +11,7 @@ import re
 import urllib.error
 import urllib.request
 
-MARKER = re.compile(r"<!-- agex-review: ([0-9a-f]{40})\b")
+MARKER = re.compile(r"<!-- agex-review: ([0-9a-f]{40})\b.*-->")
 
 
 class GitHub:
@@ -74,8 +76,15 @@ class GitHub:
 
 
 def marker_sha(body):
-    m = MARKER.search(body or "")
+    """Head SHA of the marker on the body's last non-empty line, or None."""
+    lines = (body or "").strip().splitlines()
+    m = MARKER.fullmatch(lines[-1].strip()) if lines else None
     return m.group(1) if m else None
+
+
+def bot_sha(review):
+    """Head SHA a bot review was written for; None for reviews by people or without the marker."""
+    return marker_sha(review.get("body")) if (review.get("user") or {}).get("type") == "Bot" else None
 
 
 def is_fork(pr):
@@ -84,22 +93,22 @@ def is_fork(pr):
 
 
 def already_reviewed(reviews, sha):
-    return any(marker_sha(r.get("body")) == sha for r in reviews)
+    return any(bot_sha(r) == sha for r in reviews)
 
 
 def previous_review(reviews, sha):
     """The latest bot review of an earlier head commit, as {head_sha, body}, or None."""
-    prior = [r for r in reviews if marker_sha(r.get("body")) not in (None, sha)]
+    prior = [r for r in reviews if bot_sha(r) not in (None, sha)]
     if not prior:
         return None
     last = prior[-1]
-    return {"head_sha": marker_sha(last["body"]), "body": last["body"]}
+    return {"head_sha": bot_sha(last), "body": last["body"]}
 
 
 def human_reviews(reviews, comments=()):
-    """Reviews without the bot marker, then inline review comments, for the reviewer to dedupe against."""
+    """Reviews that are not bot reviews, then inline review comments, for the reviewer to dedupe against."""
     out = [{"user": r["user"]["login"], "state": r["state"], "body": r.get("body") or "",
             "submitted_at": r.get("submitted_at")}
-           for r in reviews if marker_sha(r.get("body")) is None and r.get("user")]
+           for r in reviews if bot_sha(r) is None and r.get("user")]
     return out + [{"user": c["user"]["login"], "path": c.get("path"), "line": c.get("line"), "body": c["body"]}
                   for c in comments if c.get("user")]

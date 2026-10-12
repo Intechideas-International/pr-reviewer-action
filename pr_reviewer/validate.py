@@ -1,5 +1,6 @@
 """Check a session's outputs before anything is posted: review.md follows the template and ends with the
-marker for the head commit; findings.json is the expected shape."""
+marker for the head commit; findings.json is the expected shape and, on a re-review, holds no Suggestions
+or Nits (re-review contract, rule 4 of the reviewer's instructions)."""
 import json
 import os
 import re
@@ -26,7 +27,7 @@ def check_review(text, sha):
     return errors
 
 
-def check_findings(text):
+def check_findings(text, rereview=False):
     try:
         data = json.loads(text)
     except ValueError as e:
@@ -41,13 +42,17 @@ def check_findings(text):
             errors.append(f"findings.json: {k} must be a non-negative int")
     if not isinstance(data.get("findings"), list):
         errors.append("findings.json: findings must be a list")
+    elif rereview and (data.get("suggested") or any(
+            isinstance(f, dict) and f.get("severity") in ("Suggestion", "Nit") for f in data["findings"])):
+        errors.append("findings.json: a re-review has no Suggestions or Nits (they go under Noted)")
     return errors
 
 
-def validate(directory, sha):
+def validate(directory, sha, rereview=False):
     """Return the list of problems with the outputs in directory; empty means OK to post."""
     errors = []
-    for name, check in (("review.md", lambda t: check_review(t, sha)), ("findings.json", check_findings)):
+    for name, check in (("review.md", lambda t: check_review(t, sha)),
+                        ("findings.json", lambda t: check_findings(t, rereview))):
         path = os.path.join(directory, name)
         if not os.path.isfile(path):
             errors.append(f"{name}: missing")

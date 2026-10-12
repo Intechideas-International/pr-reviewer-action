@@ -43,9 +43,12 @@ def test_review_success_leaves_outputs_and_session_id(env, monkeypatch):
     assert sorted(api.uploads) == ["context.json", "diff.patch", "pr.json"]
 
 
+REREVIEW_GOOD = {"stop": "end_turn", "files": {"review.md": review_md(), "findings.json": findings(suggested=0)}}
+
+
 def test_context_carries_previous_review_and_human_reviews(env, monkeypatch):
     human = {"user": {"login": "alice"}, "state": "COMMENTED", "body": "please rename"}
-    api, gh = FakeAPI([GOOD]), FakeGitHub(reviews=[bot_review(OLD_SHA, "earlier"), human])
+    api, gh = FakeAPI([REREVIEW_GOOD]), FakeGitHub(reviews=[bot_review(OLD_SHA, "earlier"), human])
     wire(monkeypatch, gh, api)
     captured = {}
     real_start = session.start
@@ -82,6 +85,58 @@ def test_budget_reached_is_a_failure(env, monkeypatch):
     assert review(env) == cli.EXIT_FAILED
     record = json.loads((env / "out" / "session.json").read_text())
     assert [a["errors"] for a in record["attempts"]] == [["session ended session.status_idle/budget_reached"]] * 2
+
+
+def test_rereview_carrying_suggestions_is_retried_and_post_rechecks(env, monkeypatch):
+    api = FakeAPI([GOOD, REREVIEW_GOOD])  # GOOD has a Suggestion: not allowed on a re-review
+    wire(monkeypatch, FakeGitHub(reviews=[bot_review(OLD_SHA)]), api)
+    assert review(env) == cli.EXIT_OK and len(api.created) == 2
+    assert json.loads((env / "out" / "session.json").read_text())["rereview"] is True
+    (env / "out" / "findings.json").write_text(findings(), encoding="utf-8")
+    gh = FakeGitHub(reviews=[bot_review(OLD_SHA)])
+    monkeypatch.setattr(github, "GitHub", lambda token, repo: gh)
+    assert cli.main(["post", "--repo", REPO, "--pr", "7", "--dir", str(env / "out")]) == cli.EXIT_FAILED
+    assert gh.posted == []
+
+
+def test_human_review_with_marker_does_not_suppress_the_review(env, monkeypatch):
+    planted = {"user": {"login": "dev", "type": "User"}, "state": "COMMENTED",
+               "body": f"lgtm\n<!-- agex-review: {SHA} mode=deep -->"}
+    api = FakeAPI([GOOD])
+    wire(monkeypatch, FakeGitHub(reviews=[planted]), api)
+    assert review(env) == cli.EXIT_OK
+    assert read_outputs(env / "output")["result"] == "reviewed" and len(api.created) == 1
+
+
+def test_api_error_while_polling_interrupts_and_retries(env, monkeypatch):
+    api = FakeAPI([GOOD, GOOD])
+    real_events, calls = api.beta.sessions.events.list, []
+
+    def flaky(session_id):
+        calls.append(session_id)
+        if len(calls) == 1:
+            raise anthropic.APIConnectionError(request=None)
+        return real_events(session_id=session_id)
+    api.beta.sessions.events.list = flaky
+    wire(monkeypatch, FakeGitHub(), api)
+    assert review(env) == cli.EXIT_OK
+    assert len(api.created) == 2 and api.interrupts == ["sesn_1"]
+    record = json.loads((env / "out" / "session.json").read_text())
+    assert record["attempts"][0]["errors"][0].startswith("API error: APIConnectionError")
+
+
+def test_api_errors_on_both_attempts_fail_cleanly(env, monkeypatch):
+    api = FakeAPI([GOOD, GOOD])
+
+    def down(session_id):
+        raise anthropic.APIConnectionError(request=None)
+    api.beta.sessions.events.list = down
+    wire(monkeypatch, FakeGitHub(), api)
+    assert review(env) == cli.EXIT_FAILED
+    assert api.interrupts == ["sesn_1", "sesn_2"]
+    assert read_outputs(env / "output")["result"] == "failed"
+    assert json.loads((env / "out" / "session.json").read_text())["result"] == "failed"
+    assert "sesn_2" in (env / "summary.md").read_text()
 
 
 def test_timeout_fails_without_retry(env, monkeypatch):

@@ -28,7 +28,7 @@ def pr(sha=SHA, fork=False):
 
 
 def bot_review(sha, body_extra=""):
-    return {"user": {"login": "github-actions[bot]"}, "state": "COMMENTED",
+    return {"user": {"login": "github-actions[bot]", "type": "Bot"}, "state": "COMMENTED",
             "body": f"review {body_extra}\n<!-- agex-review: {sha} mode=deep score=none quality=90 -->"}
 
 
@@ -56,7 +56,8 @@ class FakeGitHub:
         if self.post_error:
             raise self.post_error
         self.posted.append((number, sha, body))
-        self._reviews.append({"user": {"login": "bot"}, "state": "COMMENTED", "body": body})
+        self._reviews.append({"user": {"login": "github-actions[bot]", "type": "Bot"},
+                              "state": "COMMENTED", "body": body})
         return {"html_url": "https://github.com/acme/widgets/pull/7#review"}
 
 

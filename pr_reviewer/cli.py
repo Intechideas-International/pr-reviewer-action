@@ -63,26 +63,39 @@ def run_review(api, gh, pr, reviews, *, client, out, budget_usd, clone_token, de
         raise LookupError(f"agent {session.agent_name(client)} or environment {session.ENV_NAME} "
                           "not found in this API key's workspace: deploy the client first")
     sha, files, rows = pr["head"]["sha"], inputs(gh, pr, reviews), []
+    rereview = github.previous_review(reviews, sha) is not None
     for n in range(1, attempts + 1):
         if time.monotonic() >= deadline:
             break
         dest = os.path.join(out, f"attempt-{n}")
         os.makedirs(dest, exist_ok=True)
-        sid = session.start(api, agent=agent, environment=env, client=client, repo=gh.repo, pr=pr["number"],
-                            sha=sha, pr_title=pr["title"], clone_token=clone_token, files=files,
-                            budget_usd=budget_usd)
-        if session_file:
-            open(session_file, "w").write(sid)
-        output(session_id=sid)
-        log(f"attempt {n}: session {sid} started")
+        sid = status = stop = cost = secs = None
+        saved, errors = [], []
         try:
+            sid = session.start(api, agent=agent, environment=env, client=client, repo=gh.repo, pr=pr["number"],
+                                sha=sha, pr_title=pr["title"], clone_token=clone_token, files=files,
+                                budget_usd=budget_usd)
+            if session_file:
+                open(session_file, "w").write(sid)
+            output(session_id=sid)
+            log(f"attempt {n}: session {sid} started")
             status, stop = session.wait(api, sid, deadline, poll_s)
+            saved = session.download(api, sid, dest)
+            cost, secs = session.usage(api, sid)
         except KeyboardInterrupt:
-            session.interrupt(api, sid)
+            if sid:
+                session.interrupt(api, sid)
             raise
-        saved = session.download(api, sid, dest)
-        cost, secs = session.usage(api, sid)
-        errors = validate.validate(dest, sha) if session.succeeded(status, stop) else [f"session ended {status}/{stop}"]
+        except anthropic.APIError as e:  # outlasted the SDK's own retries: stop the session, use the retry
+            errors = [f"API error: {type(e).__name__}: {e}"]
+            if sid:
+                try:
+                    session.interrupt(api, sid)
+                except anthropic.APIError:
+                    pass
+        if not errors:
+            errors = (validate.validate(dest, sha, rereview) if session.succeeded(status, stop)
+                      else [f"session ended {status}/{stop}"])
         rows.append({"attempt": n, "session_id": sid, "status": status, "stop_reason": stop, "cost_usd": cost,
                      "active_seconds": secs, "files": saved, "errors": errors})
         log(f"attempt {n}: {status}/{stop} cost ${cost} files {saved} " + ("OK" if not errors else "; ".join(errors)))
@@ -95,9 +108,10 @@ def run_review(api, gh, pr, reviews, *, client, out, budget_usd, clone_token, de
     return False, rows
 
 
-def write_record(out, pr, rows, result):
+def write_record(out, pr, rows, result, rereview):
     json.dump({"pr": {"repo": pr["base"]["repo"]["full_name"], "number": pr["number"], "head_sha": pr["head"]["sha"]},
-               "result": result, "attempts": rows}, open(os.path.join(out, "session.json"), "w"), indent=1, default=str)
+               "result": result, "rereview": rereview, "attempts": rows},
+              open(os.path.join(out, "session.json"), "w"), indent=1, default=str)
 
 
 def review_summary(repo, pr, sha, rows, result):
@@ -144,7 +158,7 @@ def cmd_review(a):
         print(f"::error::{e}")
         return EXIT_SETUP
     result = ("shadow" if a.shadow else "reviewed") if ok else "failed"
-    write_record(a.out, pr, rows, result)
+    write_record(a.out, pr, rows, result, github.previous_review(reviews, sha) is not None)
     output(result=result)
     summary(review_summary(a.repo, a.pr, sha, rows, result))
     if not ok:
@@ -159,7 +173,7 @@ def cmd_post(a):
     if record["result"] != "reviewed":
         print(f"::notice::Nothing to post (review result: {record['result']}).")
         return EXIT_OK
-    errors = validate.validate(a.dir, sha)
+    errors = validate.validate(a.dir, sha, record.get("rereview", False))
     if errors:
         print("::error::Not posting, outputs are invalid: " + "; ".join(errors))
         return EXIT_FAILED

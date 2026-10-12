@@ -5,13 +5,27 @@ from pr_reviewer import github
 
 
 def human(body="looks fine", login="alice"):
-    return {"user": {"login": login}, "state": "COMMENTED", "body": body}
+    return {"user": {"login": login, "type": "User"}, "state": "COMMENTED", "body": body}
 
 
 def test_marker_sha():
     assert github.marker_sha(bot_review(SHA)["body"]) == SHA
     assert github.marker_sha("no marker") is None
     assert github.marker_sha(None) is None
+
+
+def test_marker_sha_reads_only_the_last_line():
+    quoted = bot_review(SHA, f"quoting the diff: <!-- agex-review: {OLD_SHA} mode=deep -->\n")
+    assert github.marker_sha(quoted["body"]) == SHA
+    assert github.marker_sha(f"<!-- agex-review: {SHA} mode=deep -->\nmore text") is None
+    assert not github.already_reviewed([bot_review(OLD_SHA, f"<!-- agex-review: {SHA} x -->\n")], SHA)
+
+
+def test_a_person_posting_the_marker_is_not_a_bot_review():
+    planted = human(f"lgtm\n<!-- agex-review: {SHA} x -->")
+    assert not github.already_reviewed([planted], SHA)
+    assert github.previous_review([human(f"<!-- agex-review: {OLD_SHA} x -->")], SHA) is None
+    assert [r["user"] for r in github.human_reviews([planted])] == ["alice"]
 
 
 def test_already_reviewed_matches_head_sha_only():

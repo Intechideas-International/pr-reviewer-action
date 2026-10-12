@@ -61,3 +61,13 @@ def test_marker_must_be_last_line(tmp_path):
 def test_missing_section(tmp_path):
     body = review_md().replace("### Architect assessment\n", "")
     assert validate(write(tmp_path, body, findings()), SHA) == ["review.md: missing or out of order: ### Architect assessment"]
+
+
+def test_rereview_rejects_suggestions_and_nits(tmp_path):
+    rule = "findings.json: a re-review has no Suggestions or Nits (they go under Noted)"
+    carried = findings(suggested=0, findings=[{"severity": "Suggestion", "tag": "Suggested"}])
+    assert validate(write(tmp_path, review_md(), carried), SHA, rereview=True) == [rule]
+    assert validate(write(tmp_path, review_md(), findings()), SHA, rereview=True) == [rule]  # suggested=1
+    clean = findings(suggested=0, findings=[{"severity": "Important", "tag": "Required"}], required=1)
+    assert validate(write(tmp_path, review_md(), clean), SHA, rereview=True) == []
+    assert validate(write(tmp_path, review_md(), carried), SHA) == []  # first reviews may suggest
