@@ -316,6 +316,14 @@ def test_no_approval_when_stale_approvals_survive_pushes(env, monkeypatch, capsy
     assert "::warning::No +1" in capsys.readouterr().out
 
 
+def test_unreadable_branch_rules_mean_no_approval_with_their_own_warning(env, monkeypatch, capsys):
+    d = scored_dir(env, monkeypatch)
+    gh = FakeGitHub(dismisses_stale=urllib.error.HTTPError("u", 403, "Forbidden", {}, None))
+    wire_post(monkeypatch, gh)
+    assert post_approving(d) == cli.EXIT_OK and gh.approved == []
+    assert "::warning::No +1: could not read the rules of main: HTTP 403" in capsys.readouterr().out
+
+
 def test_failed_approval_is_a_warning_not_a_failure(env, monkeypatch, capsys):
     d = scored_dir(env, monkeypatch)
     err = urllib.error.HTTPError("u", 422, "Unprocessable Entity", {}, None)

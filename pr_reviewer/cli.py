@@ -224,7 +224,13 @@ def approve(a, gh, reviews, sha):
             print(f"::notice::No +1: the PR head moved past {sha[:8]}; the newer commit gets its own review.")
             return False
         base = pull["base"]["ref"]
-        if not gh.dismisses_stale_approvals(base):
+        try:
+            dismisses = gh.dismisses_stale_approvals(base)
+        except urllib.error.HTTPError as e:
+            # e.g. a private repo on a plan without rulesets: unknown counts as no
+            print(f"::warning::No +1: could not read the rules of {base}: HTTP {e.code} {e.reason}.")
+            return False
+        if not dismisses:
             print(f"::warning::No +1: no ruleset on {base} dismisses approvals when new commits are pushed, "
                   "so the +1 would outlive commits the reviewer has not seen.")
             return False
