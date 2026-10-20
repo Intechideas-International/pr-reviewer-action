@@ -2,11 +2,27 @@ name: InTech PR Reviewer - post
 description: >-
   Post the review left by the InTech PR Reviewer action as a COMMENT review, after validating it again.
   Run it in a separate job with pull-requests write, so the review session never sees a write token.
-  Posts nothing when a bot review for the same head commit already exists.
+  Posts nothing when a bot review for the same head commit already exists. Each repo can also let the
+  reviewer give a +1 (approve: true).
 inputs:
   github-token:
     description: Token allowed to write pull request reviews
     default: ${{ github.token }}
+  approve:
+    description: >-
+      "true": also approve the PR when the review scores at least approve-min-score with no Required
+      findings. Only the current head commit is approved, and only when a ruleset on the base branch
+      dismisses approvals on push. Off by default; each repo opts in.
+    default: "false"
+  approve-min-score:
+    description: Lowest quality score (0-100) that gets the +1
+    default: "100"
+  approve-token:
+    description: >-
+      Token that gives the +1 (default: github-token). For the +1 to count where code-owner review is
+      required, use a token of an account in the code-owner team. github-actions[bot] is never a code
+      owner, and it can approve only when the repo lets GitHub Actions approve pull requests.
+    default: ""
   slack-webhook:
     description: Slack incoming webhook; when set, a failed post sends an alert
     default: ""
@@ -14,6 +30,9 @@ outputs:
   result:
     description: posted | skipped-reviewed
     value: ${{ steps.post.outputs.result }}
+  approved:
+    description: true | false when approve is on, else empty
+    value: ${{ steps.post.outputs.approved }}
 runs:
   using: composite
   steps:
@@ -30,8 +49,13 @@ runs:
       shell: bash
       env:
         GITHUB_TOKEN: ${{ inputs.github-token }}
+        APPROVE_TOKEN: ${{ inputs.approve-token }}
+        APPROVE: ${{ inputs.approve }}
+        APPROVE_MIN_SCORE: ${{ inputs.approve-min-score }}
         PR: ${{ github.event.pull_request.number }}
-      run: pr-reviewer post --pr "$PR" --dir "$RUNNER_TEMP/pr-review-out"
+      run: |
+        pr-reviewer post --pr "$PR" --dir "$RUNNER_TEMP/pr-review-out" \
+          $([ "$APPROVE" = "true" ] && echo --approve-min-score "$APPROVE_MIN_SCORE")
     - name: Alert Slack
       if: failure() && inputs.slack-webhook != ''
       shell: bash

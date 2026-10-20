@@ -4,14 +4,20 @@ A bot review is a PR review posted by a bot account (user.type "Bot", e.g. githu
 body ends with the marker line `<!-- agex-review: <full head_sha> ... -->`. Only the last non-empty line
 counts, as in validate, so a marker quoted earlier in the body (from the diff, say) is ignored; and a
 person cannot suppress the reviewer by posting a review that carries the marker.
+
+The reviewer's +1, in repos that allow it, is a separate APPROVED review ending with
+`<!-- agex-approval: <full head_sha> -->`. It may come from a person's or machine user's token, so it
+is matched by marker and state, not by account type.
 """
 import json
 import os
 import re
 import urllib.error
+import urllib.parse
 import urllib.request
 
 MARKER = re.compile(r"<!-- agex-review: ([0-9a-f]{40})\b.*-->")
+APPROVAL = re.compile(r"<!-- agex-approval: ([0-9a-f]{40}) -->")
 
 
 class GitHub:
@@ -74,12 +80,32 @@ class GitHub:
         return json.loads(self.request("POST", f"pulls/{number}/reviews",
                                        {"commit_id": sha, "body": body, "event": "COMMENT"})[0])
 
+    def approve(self, number, sha, body):
+        return json.loads(self.request("POST", f"pulls/{number}/reviews",
+                                       {"commit_id": sha, "body": body, "event": "APPROVE"})[0])
+
+    def dismisses_stale_approvals(self, branch):
+        """True when a ruleset on branch dismisses approvals once new commits are pushed. Classic branch
+        protection needs admin to read, so it is not seen here and counts as no."""
+        rules = self.get_all(f"rules/branches/{urllib.parse.quote(branch, safe='')}")
+        return any(r.get("type") == "pull_request" and (r.get("parameters") or {}).get("dismiss_stale_reviews_on_push")
+                   for r in rules)
+
+
+def _last_line(body, pattern):
+    lines = (body or "").strip().splitlines()
+    m = pattern.fullmatch(lines[-1].strip()) if lines else None
+    return m.group(1) if m else None
+
 
 def marker_sha(body):
     """Head SHA of the marker on the body's last non-empty line, or None."""
-    lines = (body or "").strip().splitlines()
-    m = MARKER.fullmatch(lines[-1].strip()) if lines else None
-    return m.group(1) if m else None
+    return _last_line(body, MARKER)
+
+
+def approval_sha(review):
+    """Head SHA the reviewer's +1 was given for; None for any other review."""
+    return _last_line(review.get("body"), APPROVAL) if review.get("state") == "APPROVED" else None
 
 
 def bot_sha(review):
@@ -106,9 +132,10 @@ def previous_review(reviews, sha):
 
 
 def human_reviews(reviews, comments=()):
-    """Reviews that are not bot reviews, then inline review comments, for the reviewer to dedupe against."""
+    """Reviews that are neither bot reviews nor the reviewer's +1, then inline review comments, for the
+    reviewer to dedupe against."""
     out = [{"user": r["user"]["login"], "state": r["state"], "body": r.get("body") or "",
             "submitted_at": r.get("submitted_at")}
-           for r in reviews if bot_sha(r) is None and r.get("user")]
+           for r in reviews if bot_sha(r) is None and approval_sha(r) is None and r.get("user")]
     return out + [{"user": c["user"]["login"], "path": c.get("path"), "line": c.get("line"), "body": c["body"]}
                   for c in comments if c.get("user")]

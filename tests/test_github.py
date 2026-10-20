@@ -49,6 +49,49 @@ def test_human_reviews_exclude_bot_reviews_and_include_inline_comments():
     assert out[1]["path"] == "a.py"
 
 
+def approval(sha, state="APPROVED", login="reviewer-bot"):
+    return {"user": {"login": login, "type": "User"}, "state": state,
+            "body": f"✅ +1 from the PR Reviewer\n\n<!-- agex-approval: {sha} -->"}
+
+
+def test_approval_sha_needs_the_marker_and_an_approved_state():
+    assert github.approval_sha(approval(SHA)) == SHA
+    assert github.approval_sha(approval(SHA, state="COMMENTED")) is None
+    assert github.approval_sha(human()) is None
+    assert github.approval_sha(bot_review(SHA)) is None
+
+
+def test_the_reviewers_approval_is_neither_a_human_review_nor_a_bot_review():
+    reviews = [human(), approval(SHA)]
+    assert [r["user"] for r in github.human_reviews(reviews)] == ["alice"]
+    assert not github.already_reviewed(reviews, SHA)
+
+
+def test_approve_is_an_approve_review_on_the_head_commit(monkeypatch):
+    gh = github.GitHub("t", "acme/widgets")
+    calls = []
+    monkeypatch.setattr(gh, "request", lambda m, p, body=None, accept=None: (calls.append((m, p, body)) or (b"{}", "")))
+    gh.approve(7, SHA, "body")
+    assert calls == [("POST", "pulls/7/reviews", {"commit_id": SHA, "body": "body", "event": "APPROVE"})]
+
+
+def test_dismisses_stale_approvals_reads_the_branch_rules(monkeypatch):
+    gh = github.GitHub("t", "acme/widgets")
+    rules = {"qa": [{"type": "deletion"}, {"type": "pull_request", "parameters": {"dismiss_stale_reviews_on_push": True}}],
+             "feature%2Fx": [{"type": "pull_request", "parameters": {"dismiss_stale_reviews_on_push": False}}],
+             "main": []}
+    seen = []
+
+    def get_all(path, key=None):
+        seen.append(path)
+        return rules[path.split("/")[-1]]
+    monkeypatch.setattr(gh, "get_all", get_all)
+    assert gh.dismisses_stale_approvals("qa")
+    assert not gh.dismisses_stale_approvals("feature/x")
+    assert not gh.dismisses_stale_approvals("main")
+    assert seen[1] == "rules/branches/feature%2Fx"
+
+
 def test_is_fork():
     assert github.is_fork(pr(fork=True))
     assert not github.is_fork(pr())

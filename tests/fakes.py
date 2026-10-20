@@ -33,9 +33,11 @@ def bot_review(sha, body_extra=""):
 
 
 class FakeGitHub:
-    def __init__(self, token=None, repo=REPO, pull=None, reviews=(), post_error=None):
+    def __init__(self, token=None, repo=REPO, pull=None, reviews=(), post_error=None, approve_error=None,
+                 dismisses_stale=True):
         self.repo, self.pull, self._reviews = repo, pull or pr(), list(reviews)
         self.posted, self.post_error = [], post_error
+        self.approved, self.approve_error, self.dismisses_stale = [], approve_error, dismisses_stale
 
     def pr(self, number):
         return self.pull
@@ -59,6 +61,16 @@ class FakeGitHub:
         self._reviews.append({"user": {"login": "github-actions[bot]", "type": "Bot"},
                               "state": "COMMENTED", "body": body})
         return {"html_url": "https://github.com/acme/widgets/pull/7#review"}
+
+    def approve(self, number, sha, body):
+        if self.approve_error:
+            raise self.approve_error
+        self.approved.append((number, sha, body))
+        self._reviews.append({"user": {"login": "reviewer-bot", "type": "User"}, "state": "APPROVED", "body": body})
+        return {"html_url": "https://github.com/acme/widgets/pull/7#approval"}
+
+    def dismisses_stale_approvals(self, branch):
+        return self.dismisses_stale
 
 
 class FakeAPI:
