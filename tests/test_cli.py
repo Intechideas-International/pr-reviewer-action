@@ -235,6 +235,113 @@ def test_post_http_error_exit_code(env, monkeypatch):
     assert post(d) == cli.EXIT_POST
 
 
+def scored_dir(env, monkeypatch, quality=100, required=0):
+    files = {"review.md": review_md(quality=quality), "findings.json": findings(quality, required=required)}
+    wire(monkeypatch, FakeGitHub(), FakeAPI([{"stop": "end_turn", "files": files}]))
+    assert review(env) == cli.EXIT_OK
+    return str(env / "out")
+
+
+def post_approving(d, min_score="100"):
+    return cli.main(["post", "--repo", REPO, "--pr", "7", "--dir", d, "--approve-min-score", min_score])
+
+
+def wire_post(monkeypatch, gh):
+    """Every GitHub client is gh; returns the tokens the clients were made with, in order."""
+    tokens = []
+    monkeypatch.setattr(github, "GitHub", lambda token, repo: tokens.append(token) or gh)
+    return tokens
+
+
+def test_approve_at_threshold_uses_the_approve_token(env, monkeypatch):
+    d = scored_dir(env, monkeypatch)
+    monkeypatch.setenv("APPROVE_TOKEN", "owner-token")
+    gh = FakeGitHub()
+    tokens = wire_post(monkeypatch, gh)
+    assert post_approving(d) == cli.EXIT_OK
+    assert len(gh.posted) == 1 and len(gh.approved) == 1
+    number, sha, body = gh.approved[0]
+    assert sha == SHA and body.strip().endswith(f"<!-- agex-approval: {SHA} -->")
+    assert tokens == ["t", "owner-token"]
+    out = read_outputs(env / "output")
+    assert out["result"] == "posted" and out["approved"] == "true"
+
+
+def test_approve_token_defaults_to_the_github_token(env, monkeypatch):
+    d = scored_dir(env, monkeypatch)
+    gh = FakeGitHub()
+    tokens = wire_post(monkeypatch, gh)
+    assert post_approving(d) == cli.EXIT_OK and len(gh.approved) == 1
+    assert tokens == ["t", "t"]
+
+
+@pytest.mark.parametrize("quality,required", [(99, 0), (100, 1)])
+def test_no_approval_below_the_score_or_with_required_findings(env, monkeypatch, quality, required):
+    d = scored_dir(env, monkeypatch, quality, required)
+    gh = FakeGitHub()
+    wire_post(monkeypatch, gh)
+    assert post_approving(d) == cli.EXIT_OK
+    assert len(gh.posted) == 1 and gh.approved == []
+    assert read_outputs(env / "output")["approved"] == "false"
+
+
+def test_lower_threshold_is_per_repo(env, monkeypatch):
+    d = scored_dir(env, monkeypatch, quality=95)
+    gh = FakeGitHub()
+    wire_post(monkeypatch, gh)
+    assert post_approving(d, "95") == cli.EXIT_OK and len(gh.approved) == 1
+
+
+def test_no_approval_unless_the_repo_opts_in(env, monkeypatch):
+    d = scored_dir(env, monkeypatch)
+    gh = FakeGitHub()
+    wire_post(monkeypatch, gh)
+    assert post(d) == cli.EXIT_OK
+    assert len(gh.posted) == 1 and gh.approved == []
+    assert "approved" not in read_outputs(env / "output")
+
+
+def test_no_approval_when_the_head_moved(env, monkeypatch):
+    d = scored_dir(env, monkeypatch)
+    gh = FakeGitHub(pull=pr(sha=OLD_SHA))
+    wire_post(monkeypatch, gh)
+    assert post_approving(d) == cli.EXIT_OK and gh.approved == []
+
+
+def test_no_approval_when_stale_approvals_survive_pushes(env, monkeypatch, capsys):
+    d = scored_dir(env, monkeypatch)
+    gh = FakeGitHub(dismisses_stale=False)
+    wire_post(monkeypatch, gh)
+    assert post_approving(d) == cli.EXIT_OK and gh.approved == []
+    assert "::warning::No +1" in capsys.readouterr().out
+
+
+def test_failed_approval_is_a_warning_not_a_failure(env, monkeypatch, capsys):
+    d = scored_dir(env, monkeypatch)
+    err = urllib.error.HTTPError("u", 422, "Unprocessable Entity", {}, None)
+    gh = FakeGitHub(approve_error=err)
+    wire_post(monkeypatch, gh)
+    assert post_approving(d) == cli.EXIT_OK
+    assert len(gh.posted) == 1 and read_outputs(env / "output")["approved"] == "false"
+    assert "::warning::The +1 failed: HTTP 422" in capsys.readouterr().out
+
+
+def test_rerun_approves_once_and_can_approve_after_an_earlier_failure(env, monkeypatch):
+    d = scored_dir(env, monkeypatch)
+    gh = FakeGitHub(approve_error=urllib.error.HTTPError("u", 403, "Forbidden", {}, None))
+    wire_post(monkeypatch, gh)
+    assert post_approving(d) == cli.EXIT_OK and gh.approved == []
+    gh.approve_error = None  # e.g. the repo now lets the token approve
+    assert post_approving(d) == cli.EXIT_OK and post_approving(d) == cli.EXIT_OK
+    assert len(gh.posted) == 1 and len(gh.approved) == 1
+
+
+def test_approve_min_score_must_be_a_percentage(env):
+    with pytest.raises(SystemExit) as e:
+        cli.main(["post", "--repo", REPO, "--pr", "7", "--approve-min-score", "101"])
+    assert e.value.code == cli.EXIT_USAGE
+
+
 def test_interrupt_by_session_file(env, monkeypatch):
     api = FakeAPI([{"stop": None}])
     api.beta.sessions.create()

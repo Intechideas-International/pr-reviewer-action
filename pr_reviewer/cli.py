@@ -2,14 +2,17 @@
 
     pr-reviewer review --client <c> --pr <n> [--repo owner/name] [--shadow] [--budget-usd 15] [--out DIR]
                        [--session-file F]
-    pr-reviewer post --pr <n> [--repo owner/name] --dir DIR
+    pr-reviewer post --pr <n> [--repo owner/name] --dir DIR [--approve-min-score N]
     pr-reviewer interrupt (--session-file F | --session-id ID)
 
 review reads the PR with GITHUB_TOKEN (read-only: the session clones the repo with it), runs one
 Managed Agents session on agent pr-reviewer-<client> with ANTHROPIC_API_KEY, retries once if the
 session fails or its output is invalid, and leaves review.md, findings.json and session.json in DIR.
 post runs in a separate job whose GITHUB_TOKEN can write: it re-validates DIR and posts review.md as a
-COMMENT review unless a bot review for that head commit already exists.
+COMMENT review unless a bot review for that head commit already exists. With --approve-min-score it also
+gives a +1 (an APPROVE review, with APPROVE_TOKEN when set) if findings.json shows that quality or more
+and no Required findings, the PR head is still that commit, and a ruleset on the base branch dismisses
+approvals on push.
 
 Exit codes: 0 done (reviewed, posted, shadow or skipped), 1 review failed, 2 usage, 3 setup
 (missing key, agent or environment not deployed), 4 posting failed.
@@ -179,18 +182,62 @@ def cmd_post(a):
         return EXIT_FAILED
     gh = github.GitHub(os.environ["GITHUB_TOKEN"], a.repo)
     try:
-        if github.already_reviewed(gh.reviews(a.pr), sha):
+        reviews = gh.reviews(a.pr)
+        if github.already_reviewed(reviews, sha):
             print(f"::notice::A bot review for {sha[:8]} already exists; not posting again.")
-            output(result="skipped-reviewed")
-            return EXIT_OK
-        posted = gh.post_review(a.pr, sha, open(os.path.join(a.dir, "review.md"), encoding="utf-8").read())
+            result = "skipped-reviewed"
+        else:
+            posted = gh.post_review(a.pr, sha, open(os.path.join(a.dir, "review.md"), encoding="utf-8").read())
+            print(f"posted {posted.get('html_url')}")
+            summary(f"Posted the review for `{sha[:8]}`: {posted.get('html_url')}")
+            result = "posted"
     except urllib.error.HTTPError as e:
         print(f"::error::Posting the review failed: HTTP {e.code} {e.reason}")
         return EXIT_POST
-    print(f"posted {posted.get('html_url')}")
-    output(result="posted")
-    summary(f"Posted the review for `{sha[:8]}`: {posted.get('html_url')}")
+    output(result=result)
+    if a.approve_min_score is not None:
+        output(approved=str(approve(a, gh, reviews, sha)).lower())
     return EXIT_OK
+
+
+def approval_body(sha, quality, min_score):
+    return (f"✅ +1 from the PR Reviewer: `{sha[:8]}` scored {quality}/100 with no Required findings. "
+            f"This repo lets the reviewer approve at {min_score}/100 or more "
+            "(`approve` in `.github/workflows/pr-review.yml`).\n\n"
+            f"<!-- agex-approval: {sha} -->")
+
+
+def approve(a, gh, reviews, sha):
+    """Give the +1 when the review qualifies. Returns whether the head commit ends up approved. A missed +1
+    is a warning, never a failure: the review itself is already posted."""
+    if any(github.approval_sha(r) == sha for r in reviews):
+        print(f"::notice::The reviewer already approved {sha[:8]}.")
+        return True
+    f = json.load(open(os.path.join(a.dir, "findings.json"), encoding="utf-8"))
+    if f["required"] or f["quality"] < a.approve_min_score:
+        print(f"::notice::No +1: quality {f['quality']}/100 with {f['required']} Required "
+              f"(needs {a.approve_min_score} or more and 0 Required).")
+        return False
+    try:
+        pull = gh.pr(a.pr)
+        if pull["head"]["sha"] != sha:
+            print(f"::notice::No +1: the PR head moved past {sha[:8]}; the newer commit gets its own review.")
+            return False
+        base = pull["base"]["ref"]
+        if not gh.dismisses_stale_approvals(base):
+            print(f"::warning::No +1: no ruleset on {base} dismisses approvals when new commits are pushed, "
+                  "so the +1 would outlive commits the reviewer has not seen.")
+            return False
+        approver = github.GitHub(os.environ.get("APPROVE_TOKEN") or os.environ["GITHUB_TOKEN"], a.repo)
+        approved = approver.approve(a.pr, sha, approval_body(sha, f["quality"], a.approve_min_score))
+    except urllib.error.HTTPError as e:
+        print(f"::warning::The +1 failed: HTTP {e.code} {e.reason}. A 403 usually means the repo does not let "
+              "GitHub Actions approve pull requests, or approve-token cannot write; a 422, that the token's "
+              "account opened the PR.")
+        return False
+    print(f"approved {approved.get('html_url')}")
+    summary(f"Approved `{sha[:8]}` ({f['quality']}/100, 0 Required): {approved.get('html_url')}")
+    return True
 
 
 def cmd_interrupt(a):
@@ -226,6 +273,8 @@ def main(argv=None):
     p.add_argument("--repo", **repo)
     p.add_argument("--pr", type=int, required=True)
     p.add_argument("--dir", default=OUT)
+    p.add_argument("--approve-min-score", type=int,
+                   help="also approve when quality is at least this (0-100) and there are no Required findings")
 
     i = sub.add_parser("interrupt")
     i.add_argument("--session-file")
@@ -234,6 +283,8 @@ def main(argv=None):
     a = ap.parse_args(argv)
     if a.cmd in ("review", "post") and not a.repo:
         ap.error("--repo is required outside GitHub Actions")
+    if a.cmd == "post" and a.approve_min_score is not None and not 0 <= a.approve_min_score <= 100:
+        ap.error("--approve-min-score must be 0-100")
     return {"review": cmd_review, "post": cmd_post, "interrupt": cmd_interrupt}[a.cmd](a)
 
 

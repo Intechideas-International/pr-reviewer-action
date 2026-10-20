@@ -35,4 +35,8 @@ jobs:
     steps:
       - uses: Intechideas-International/pr-reviewer-action/post@v1
         with:
+          # This repo's approval policy. true: the reviewer gives a +1 when it scores the PR at least
+          # approve-min-score (default 100) with no Required findings. false: a person gives every +1.
+          # Where code-owner review is required, also set approve-token (see the README).
+          approve: false
           slack-webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
