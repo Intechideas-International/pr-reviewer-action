@@ -70,6 +70,8 @@ class FakeGitHub:
         return {"html_url": "https://github.com/acme/widgets/pull/7#approval"}
 
     def dismisses_stale_approvals(self, branch):
+        if isinstance(self.dismisses_stale, Exception):
+            raise self.dismisses_stale
         return self.dismisses_stale
 
 

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pr-reviewer"
-version = "1.1.0"
+version = "1.1.1"
 description = "Runner for InTech's PR Reviewer: one Claude Managed Agents review per pull request head commit"
 requires-python = ">=3.10"
 dependencies = ["anthropic==1.12.1"]
