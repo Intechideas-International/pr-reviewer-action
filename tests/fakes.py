@@ -79,10 +79,12 @@ class FakeAPI:
     """Each created session plays the next script: {"stop": end_turn|budget_reached|...|None (never ends),
     "terminated": bool, "files": {name: text}, "cost": "97"}."""
 
-    def __init__(self, scripts, agent=True, env=True):
+    def __init__(self, scripts, agent=True, env=True, rereview_agent=False):
         self.scripts, self.sessions, self.interrupts, self.uploads = list(scripts), {}, [], []
         self.created = []
         agents = [NS(name="pr-reviewer-acme", id="agent_1", version=3)] if agent else []
+        if rereview_agent:
+            agents.append(NS(name="pr-reviewer-acme-rereview", id="agent_2", version=1))
         envs = [NS(name="pr-reviewer-sandbox", id="env_1")] if env else []
         self.files = NS(upload=self._upload)
         self.beta = NS(
