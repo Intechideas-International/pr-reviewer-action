@@ -59,6 +59,32 @@ def test_context_carries_previous_review_and_human_reviews(env, monkeypatch):
     assert [r["user"] for r in context["human_reviews"]] == ["alice"]
 
 
+def test_first_review_runs_on_the_main_agent(env, monkeypatch):
+    api = FakeAPI([GOOD], rereview_agent=True)
+    wire(monkeypatch, FakeGitHub(), api)
+    assert review(env) == cli.EXIT_OK
+    assert api.created[0]["agent"]["id"] == "agent_1"
+    record = json.loads((env / "out" / "session.json").read_text())
+    assert record["rereview"] is False and record["attempts"][0]["agent"] == "pr-reviewer-acme"
+
+
+def test_rereview_runs_on_the_rereview_agent_when_deployed(env, monkeypatch):
+    api = FakeAPI([REREVIEW_GOOD], rereview_agent=True)
+    wire(monkeypatch, FakeGitHub(reviews=[bot_review(OLD_SHA)]), api)
+    assert review(env) == cli.EXIT_OK
+    assert api.created[0]["agent"] == {"type": "agent", "id": "agent_2", "version": 1}
+    record = json.loads((env / "out" / "session.json").read_text())
+    assert record["rereview"] is True and record["attempts"][0]["agent"] == "pr-reviewer-acme-rereview"
+    assert "`pr-reviewer-acme-rereview`" in (env / "summary.md").read_text()
+
+
+def test_rereview_falls_back_to_the_main_agent(env, monkeypatch):
+    api = FakeAPI([REREVIEW_GOOD])
+    wire(monkeypatch, FakeGitHub(reviews=[bot_review(OLD_SHA)]), api)
+    assert review(env) == cli.EXIT_OK
+    assert api.created[0]["agent"]["id"] == "agent_1"
+
+
 def test_invalid_output_is_retried_once(env, monkeypatch):
     bad = {"stop": "end_turn", "files": {"review.md": review_md(), "findings.json": findings(quality=200)}}
     api = FakeAPI([bad, GOOD])

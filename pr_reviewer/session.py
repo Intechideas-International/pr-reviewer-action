@@ -1,7 +1,8 @@
 """One review session on Claude Managed Agents: create, wait, interrupt, download the outputs.
 
 Resources are found by name in whichever workspace the API key belongs to: environment
-`pr-reviewer-sandbox`, agent `pr-reviewer-<client>` (deployed from the private pr-reviewer repo).
+`pr-reviewer-sandbox`, agent `pr-reviewer-<client>`, and optionally `pr-reviewer-<client>-rereview`, the same
+reviewer at a lower effort for re-reviews (both deployed from the private pr-reviewer repo).
 """
 import time
 
@@ -12,16 +13,18 @@ REPO_MOUNT = "/workspace/repo"
 DEADLINE_S = 45 * 60
 
 
-def agent_name(client):
-    return f"pr-reviewer-{client}"
+def agent_name(client, rereview=False):
+    return f"pr-reviewer-{client}" + ("-rereview" if rereview else "")
 
 
 def find_environment(api):
     return next((e for e in api.beta.environments.list() if e.name == ENV_NAME), None)
 
 
-def find_agent(api, client):
-    return next((a for a in api.beta.agents.list() if a.name == agent_name(client)), None)
+def find_agent(api, client, rereview=False):
+    """The client's agent. A re-review uses the client's re-review agent when one is deployed."""
+    agents = {a.name: a for a in api.beta.agents.list()}
+    return (rereview and agents.get(agent_name(client, rereview=True))) or agents.get(agent_name(client))
 
 
 def start(api, *, agent, environment, client, repo, pr, sha, pr_title, clone_token, files, budget_usd):

@@ -6,8 +6,9 @@
     pr-reviewer interrupt (--session-file F | --session-id ID)
 
 review reads the PR with GITHUB_TOKEN (read-only: the session clones the repo with it), runs one
-Managed Agents session on agent pr-reviewer-<client> with ANTHROPIC_API_KEY, retries once if the
-session fails or its output is invalid, and leaves review.md, findings.json and session.json in DIR.
+Managed Agents session on agent pr-reviewer-<client> with ANTHROPIC_API_KEY (a re-review runs on
+pr-reviewer-<client>-rereview when that agent is deployed), retries once if the session fails or its output
+is invalid, and leaves review.md, findings.json and session.json in DIR.
 post runs in a separate job whose GITHUB_TOKEN can write: it re-validates DIR and posts review.md as a
 COMMENT review unless a bot review for that head commit already exists. With --approve-min-score it also
 gives a +1 (an APPROVE review, with APPROVE_TOKEN when set) if findings.json shows that quality or more
@@ -61,12 +62,13 @@ def inputs(gh, pr, reviews):
 def run_review(api, gh, pr, reviews, *, client, out, budget_usd, clone_token, deadline, poll_s=15,
                session_file=None, attempts=2, log=print):
     """Review pr, retrying once. Returns (ok, rows); on ok, review.md and findings.json are in out."""
-    agent, env = session.find_agent(api, client), session.find_environment(api)
+    sha = pr["head"]["sha"]
+    rereview = github.previous_review(reviews, sha) is not None
+    agent, env = session.find_agent(api, client, rereview), session.find_environment(api)
     if not agent or not env:
         raise LookupError(f"agent {session.agent_name(client)} or environment {session.ENV_NAME} "
                           "not found in this API key's workspace: deploy the client first")
-    sha, files, rows = pr["head"]["sha"], inputs(gh, pr, reviews), []
-    rereview = github.previous_review(reviews, sha) is not None
+    files, rows = inputs(gh, pr, reviews), []
     for n in range(1, attempts + 1):
         if time.monotonic() >= deadline:
             break
@@ -81,7 +83,7 @@ def run_review(api, gh, pr, reviews, *, client, out, budget_usd, clone_token, de
             if session_file:
                 open(session_file, "w").write(sid)
             output(session_id=sid)
-            log(f"attempt {n}: session {sid} started")
+            log(f"attempt {n}: session {sid} started on agent {agent.name} v{agent.version}")
             status, stop = session.wait(api, sid, deadline, poll_s)
             saved = session.download(api, sid, dest)
             cost, secs = session.usage(api, sid)
@@ -99,8 +101,8 @@ def run_review(api, gh, pr, reviews, *, client, out, budget_usd, clone_token, de
         if not errors:
             errors = (validate.validate(dest, sha, rereview) if session.succeeded(status, stop)
                       else [f"session ended {status}/{stop}"])
-        rows.append({"attempt": n, "session_id": sid, "status": status, "stop_reason": stop, "cost_usd": cost,
-                     "active_seconds": secs, "files": saved, "errors": errors})
+        rows.append({"attempt": n, "session_id": sid, "agent": agent.name, "status": status, "stop_reason": stop,
+                     "cost_usd": cost, "active_seconds": secs, "files": saved, "errors": errors})
         log(f"attempt {n}: {status}/{stop} cost ${cost} files {saved} " + ("OK" if not errors else "; ".join(errors)))
         if not errors:
             for name in session.OUTPUTS:
@@ -122,11 +124,13 @@ def review_summary(repo, pr, sha, rows, result):
     if result == "shadow":
         lines += ["Shadow mode: nothing was posted. review.md and findings.json are in the workflow artifacts.", ""]
     if rows:
-        lines += ["| Attempt | Session | Outcome | Cost | Active s | Problems |", "|---|---|---|---|---|---|"]
+        lines += ["| Attempt | Session | Agent | Outcome | Cost | Active s | Problems |",
+                  "|---|---|---|---|---|---|---|"]
         for r in rows:
             cost = "n/a" if r["cost_usd"] is None else f"${r['cost_usd']:.2f}"
-            lines.append(f"| {r['attempt']} | `{r['session_id']}` | {r['status']}/{r['stop_reason']} | {cost} | "
-                         f"{r['active_seconds'] or 'n/a'} | {'; '.join(r['errors']) or 'none'} |")
+            lines.append(f"| {r['attempt']} | `{r['session_id']}` | `{r['agent']}` | "
+                         f"{r['status']}/{r['stop_reason']} | {cost} | {r['active_seconds'] or 'n/a'} | "
+                         f"{'; '.join(r['errors']) or 'none'} |")
     return "\n".join(lines)
 
 
